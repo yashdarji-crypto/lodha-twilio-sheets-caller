@@ -1,8 +1,3 @@
-// ============================================
-// FILE: controllers/callController.js
-// ADD THIS NEW ENDPOINT
-// ============================================
-
 const twilio = require('twilio');
 const { VoiceResponse } = require('twilio').twiml;
 const sheetService = require('../utils/googleSheet');
@@ -12,10 +7,10 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-/**
- * NEW: Initiate outbound call
- * Called by Google Apps Script time trigger
- */
+// ============================================
+// NEW ENDPOINT: Initiate outbound call
+// Called by Google Apps Script
+// ============================================
 exports.initiateCall = async (req, res) => {
   try {
     const { customer_id, phone } = req.body;
@@ -26,6 +21,8 @@ exports.initiateCall = async (req, res) => {
         error: 'customer_id and phone required' 
       });
     }
+
+    console.log(`Initiating call for customer ${customer_id} to ${phone}`);
 
     // Get customer details from sheet
     const customer = await sheetService.getLeadById(customer_id);
@@ -46,8 +43,8 @@ exports.initiateCall = async (req, res) => {
       statusCallback: `${process.env.BASE_URL}/call-status?customer_id=${customer_id}`,
       statusCallbackEvent: ['completed', 'no-answer', 'busy', 'failed'],
       statusCallbackMethod: 'POST',
-      timeout: 30, // Ring timeout in seconds
-      record: false // Set to true if you want to record calls
+      timeout: 30,
+      record: false
     });
 
     console.log(`✓ Call initiated: ${call.sid} for customer ${customer_id}`);
@@ -68,10 +65,10 @@ exports.initiateCall = async (req, res) => {
   }
 };
 
-/**
- * Call Status Callback
- * Twilio calls this when call completes/fails
- */
+// ============================================
+// NEW ENDPOINT: Call status callback
+// Twilio calls this when call completes
+// ============================================
 exports.callStatus = async (req, res) => {
   try {
     const customerId = req.query.customer_id;
@@ -86,7 +83,7 @@ exports.callStatus = async (req, res) => {
     let response = callStatus;
 
     if (callStatus === 'no-answer' || callStatus === 'busy') {
-      newStatus = 'PENDING'; // Will retry
+      newStatus = 'PENDING'; // Will retry later
       response = `NO_ANSWER_${callStatus}`;
     } else if (callStatus === 'failed') {
       newStatus = 'FAILED';
@@ -97,7 +94,7 @@ exports.callStatus = async (req, res) => {
     // (If they pressed 1 or 2, that takes precedence)
     const customer = await sheetService.getLeadById(customerId);
     
-    if (customer.status === 'IN_PROGRESS') {
+    if (customer && customer.status === 'IN_PROGRESS') {
       await sheetService.updateLead({
         id: customerId,
         status: newStatus,
@@ -113,94 +110,8 @@ exports.callStatus = async (req, res) => {
   }
 };
 
-/**
- * EXISTING: Generate call script (TwiML)
- * Twilio calls this when call connects
- */
-exports.callScript = async (req, res) => {
-  try {
-    const id = req.query.customer_id;
-    if (!id) return res.status(400).send('customer_id required');
-
-    const customer = await sheetService.getLeadById(id);
-    if (!customer || !customer.id) {
-      return res.status(404).send('customer not found');
-    }
-
-    const twiml = new VoiceResponse();
-
-    // Multi-language support
-    const scripts = {
-      EN: `Hello! This is Lodha Group calling regarding your inquiry for ${customer.project}. Press 1 if you are interested, or press 2 if you are not interested.`,
-      HI: `Namaste! Lodha Group aapko ${customer.project} ke baare mein call kar raha hai. Agar interested hain toh 1 press karein, nahin interested hain toh 2 press karein.`,
-      MR: `Namaskar! Lodha Group tumhala ${customer.project} baabat call karat ahe. Interest asel tar 1 press kara, nasel tar 2 press kara.`
-    };
-
-    const message = scripts[customer.language] || scripts.EN;
-
-    // Gather customer response
-    const gather = twiml.gather({
-      input: 'dtmf', // digit input
-      numDigits: 1,
-      timeout: 5,
-      action: `${process.env.BASE_URL}/handle-input?cid=${customer.id}`,
-      method: 'POST'
-    });
-    
-    gather.say({ voice: 'Polly.Aditi', language: 'hi-IN' }, message);
-
-    // If no input received
-    twiml.say('We did not receive any input. Thank you for your time. Goodbye.');
-
-    res.set('Content-Type', 'text/xml');
-    res.send(twiml.toString());
-
-  } catch (error) {
-    console.error('Error generating call script:', error);
-    res.status(500).send('error');
-  }
-};
-
-/**
- * EXISTING: Handle customer input (DTMF response)
- * Twilio calls this when customer presses 1 or 2
- */
-exports.handleInput = async (req, res) => {
-  try {
-    const customerId = req.query.cid;
-    const digits = req.body.Digits;
-    const response = digits || 'NO_INPUT';
-
-    console.log(`Customer ${customerId} responded: ${response}`);
-
-    // Update sheet with customer response
-    await sheetService.updateLead({
-      id: customerId,
-      status: 'DONE',
-      response: response === '1' ? 'INTERESTED' : response === '2' ? 'NOT_INTERESTED' : 'NO_INPUT'
-    });
-
-    const twiml = new VoiceResponse();
-    
-    if (response === '1') {
-      twiml.say('Thank you for your interest! Our team will contact you soon. Goodbye.');
-    } else if (response === '2') {
-      twiml.say('Thank you for your time. Goodbye.');
-    } else {
-      twiml.say('Thank you. Goodbye.');
-    }
-
-    res.set('Content-Type', 'text/xml');
-    res.send(twiml.toString());
-
-  } catch (error) {
-    console.error('Error handling input:', error);
-    res.status(500).send('error');
-  }
-};
-
 // ============================================
-// EXISTING ENDPOINTS (Keep these)
+// EXISTING ENDPOINTS (Keep these as-is)
 // ============================================
 
 exports.getNextCustomer = async (req, res) => {
@@ -211,11 +122,69 @@ exports.getNextCustomer = async (req, res) => {
       phone: customer.phone,
       customer_id: customer.id,
       project: customer.project,
-      language: customer.language
+      language: customer.language,
+      script_url: `/call-script?customer_id=${customer.id}`
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal' });
+  }
+};
+
+exports.callScript = async (req, res) => {
+  try {
+    const id = req.query.customer_id;
+    if (!id) return res.status(400).send('customer_id required');
+
+    const customer = await sheetService.getLeadById(id);
+    if (!customer) return res.status(404).send('not found');
+
+    const twiml = new VoiceResponse();
+
+    const msgEN = `Hello! This is Lodha Group regarding your enquiry for ${customer.project}. Press 1 for yes, 2 for no.`;
+    const msgHI = `Namaste! Lodha Group aapko call kar raha hai regarding ${customer.project}. Press 1 for haan, 2 for nahin.`;
+
+    const message = (customer.language === 'HI') ? msgHI : msgEN;
+
+    const gather = twiml.gather({
+      input: 'dtmf speech',
+      numDigits: 1,
+      timeout: 5,
+      action: `${process.env.BASE_URL || ''}/handle-input?cid=${customer.id}`,
+      method: 'POST'
+    });
+    gather.say(message);
+
+    twiml.say('We did not receive any input. Thank you.');
+
+    res.set('Content-Type', 'text/xml');
+    res.send(twiml.toString());
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('error');
+  }
+};
+
+exports.handleInput = async (req, res) => {
+  try {
+    const customerId = req.query.cid;
+    const digits = req.body.Digits;
+    const speech = req.body.SpeechResult;
+    const response = digits || speech || 'NO_INPUT';
+
+    await sheetService.updateLead({
+      id: customerId,
+      status: 'DONE',
+      response
+    });
+
+    const twiml = new VoiceResponse();
+    twiml.say('Thank you for your response. Goodbye.');
+    res.set('Content-Type', 'text/xml');
+    res.send(twiml.toString());
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('error');
   }
 };
 
